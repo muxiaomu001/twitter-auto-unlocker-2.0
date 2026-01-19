@@ -1,0 +1,83 @@
+# Twitter Auto Unlocker 2.0 配置文件（示例）
+# 复制此文件为 config.yaml 并填写你的配置
+
+# =====================================
+# 验证码服务配置
+# =====================================
+captcha:
+  # YesCaptcha API Key（人机助手插件需要）
+  # 在 https://yescaptcha.com 注册获取
+  api_key: "YOUR_YESCAPTCHA_API_KEY"
+
+  # 插件等待配置
+  plugin:
+    # 最大等待时间（秒）- 插件处理验证码的超时时间
+    max_wait_time: 120
+
+# =====================================
+# 浏览器配置（BitBrowser）
+# =====================================
+browser:
+  # BitBrowser API 地址
+  api_url: "http://127.0.0.1:54345"
+
+  # 页面加载超时时间（秒）
+  page_timeout: 60
+
+  # 是否保存截图
+  save_screenshots: true
+
+  # 截图保存目录（相对于 output 目录）
+  screenshot_dir: "screenshots"
+
+# =====================================
+# 并发配置
+# =====================================
+concurrency:
+  # 最大并发浏览器数
+  max_browsers: 5
+
+  # 任务间隔时间（秒）
+  task_delay: 2
+
+# =====================================
+# 重试配置
+# =====================================
+retry:
+  # 每个账号最大重试次数
+  max_attempts: 3
+
+  # 重试基础延迟（秒）
+  delay_base: 5
+
+  # 重试延迟增量（秒）
+  delay_increment: 5
+
+# =====================================
+# 输出配置
+# =====================================
+output:
+  # 输出目录
+  dir: "./output"
+
+  # 是否导出 cookies
+  export_cookies: true
+
+  # 成功账号列表文件
+  success_file: "success.txt"
+
+  # 失败账号列表文件
+  failed_file: "failed.txt"
+
+# =====================================
+# 日志配置
+# =====================================
+logging:
+  # 日志级别：DEBUG, INFO, WARNING, ERROR
+  level: "INFO"
+
+  # 是否输出到文件
+  file_output: true
+
+  # 日志文件名
+  file_name: "unlock.log"

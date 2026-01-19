@@ -1,0 +1,19 @@
+# Twitter Auto Unlocker 2.0 Dependencies
+
+# Browser automation (CDP connection to BitBrowser)
+playwright>=1.40.0
+
+# Async HTTP client (YesCaptcha API calls)
+aiohttp>=3.9.0
+
+# TOTP 2FA code generation
+pyotp>=2.9.0
+
+# Async file operations
+aiofiles>=23.2.1
+
+# Config file parsing
+pyyaml>=6.0.1
+
+# Logging enhancements
+loguru>=0.7.0
