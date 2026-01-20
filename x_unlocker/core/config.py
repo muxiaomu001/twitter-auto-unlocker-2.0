@@ -7,7 +7,7 @@
 - 支持 CLI 参数合并
 - 类型校验与默认值
 
-版本: 2.0 - 仅支持 YesCaptcha + BitBrowser
+版本: 2.0 - 支持 BitBrowser + 插件验证码配置
 """
 
 from dataclasses import dataclass, field
@@ -25,7 +25,7 @@ class CaptchaConfig:
     验证码配置（2.0 简化版）
 
     支持两种模式:
-    - plugin: 使用 YesCaptcha 人机助手浏览器插件（推荐）
+    - plugin: 使用浏览器插件处理验证码（支持 2captcha/YesCaptcha）
     - api: 使用 YesCaptcha 图像识别 API
     """
     mode: str = "plugin"  # "plugin" 或 "api"
@@ -37,10 +37,17 @@ class CaptchaConfig:
     # 插件模式配置
     plugin_auto_wait: bool = True
     plugin_max_wait_time: int = 120  # 秒
+    plugin_provider: str = "auto"  # auto | 2captcha | yescaptcha
+    plugin_twocaptcha_key: str = ""
+    plugin_twocaptcha_ext_id: str = ""
+    plugin_twocaptcha_turnstile_only: bool = True
+    plugin_yescaptcha_key: str = ""
+    plugin_yescaptcha_ext_id: str = ""
+    plugin_yescaptcha_funcaptcha_only: bool = True
 
     def validate(self) -> None:
         """校验配置"""
-        if not self.api_key:
+        if self.mode == "api" and not self.api_key:
             raise MissingConfigError("captcha.api_key 是必需的配置项")
 
         if self.mode not in ("plugin", "api"):
@@ -56,6 +63,23 @@ class CaptchaConfig:
     def is_plugin_mode(self) -> bool:
         """是否使用插件模式"""
         return self.mode.lower() == "plugin"
+
+    def plugin_provider_order(self) -> list:
+        """获取插件优先级"""
+        provider = (self.plugin_provider or "auto").strip().lower()
+        if provider in ("2captcha", "twocaptcha", "2cap"):
+            return ["2captcha"]
+        if provider in ("yescaptcha", "yc"):
+            return ["yescaptcha"]
+        return ["2captcha", "yescaptcha"]
+
+    def get_twocaptcha_key(self) -> str:
+        """获取 2captcha 插件 Key"""
+        return self.plugin_twocaptcha_key or ""
+
+    def get_yescaptcha_key(self) -> str:
+        """获取 YesCaptcha 插件 Key（优先 plugin 配置）"""
+        return self.plugin_yescaptcha_key or self.api_key
 
 
 @dataclass
@@ -196,6 +220,8 @@ class AppConfig:
 
         # 解析插件配置
         plugin_data = captcha_data.get("plugin", {})
+        twocaptcha_data = plugin_data.get("twocaptcha", {})
+        yescaptcha_data = plugin_data.get("yescaptcha", {})
         api_data = captcha_data.get("api", {})
 
         return cls(
@@ -207,6 +233,17 @@ class AppConfig:
                 max_rounds=api_data.get("max_rounds", 10),
                 plugin_auto_wait=plugin_data.get("auto_wait", True),
                 plugin_max_wait_time=plugin_data.get("max_wait_time", 120),
+                plugin_provider=plugin_data.get("provider", "auto"),
+                plugin_twocaptcha_key=twocaptcha_data.get("api_key", ""),
+                plugin_twocaptcha_ext_id=twocaptcha_data.get("ext_id", ""),
+                plugin_twocaptcha_turnstile_only=twocaptcha_data.get(
+                    "turnstile_only", True
+                ),
+                plugin_yescaptcha_key=yescaptcha_data.get("api_key", ""),
+                plugin_yescaptcha_ext_id=yescaptcha_data.get("ext_id", ""),
+                plugin_yescaptcha_funcaptcha_only=yescaptcha_data.get(
+                    "funcaptcha_only", True
+                ),
             ),
             browser=BrowserConfig(
                 api_url=browser_data.get("api_url", "http://127.0.0.1:54345"),
@@ -309,6 +346,17 @@ class AppConfig:
                 "plugin": {
                     "auto_wait": config.captcha.plugin_auto_wait,
                     "max_wait_time": config.captcha.plugin_max_wait_time,
+                    "provider": config.captcha.plugin_provider,
+                    "twocaptcha": {
+                        "api_key": config.captcha.plugin_twocaptcha_key,
+                        "ext_id": config.captcha.plugin_twocaptcha_ext_id,
+                        "turnstile_only": config.captcha.plugin_twocaptcha_turnstile_only,
+                    },
+                    "yescaptcha": {
+                        "api_key": config.captcha.plugin_yescaptcha_key,
+                        "ext_id": config.captcha.plugin_yescaptcha_ext_id,
+                        "funcaptcha_only": config.captcha.plugin_yescaptcha_funcaptcha_only,
+                    },
                 },
             },
             "browser": {
@@ -366,6 +414,17 @@ class AppConfig:
                 "plugin": {
                     "auto_wait": self.captcha.plugin_auto_wait,
                     "max_wait_time": self.captcha.plugin_max_wait_time,
+                    "provider": self.captcha.plugin_provider,
+                    "twocaptcha": {
+                        "api_key": self.captcha.plugin_twocaptcha_key,
+                        "ext_id": self.captcha.plugin_twocaptcha_ext_id,
+                        "turnstile_only": self.captcha.plugin_twocaptcha_turnstile_only,
+                    },
+                    "yescaptcha": {
+                        "api_key": self.captcha.plugin_yescaptcha_key,
+                        "ext_id": self.captcha.plugin_yescaptcha_ext_id,
+                        "funcaptcha_only": self.captcha.plugin_yescaptcha_funcaptcha_only,
+                    },
                 },
             },
             "browser": {

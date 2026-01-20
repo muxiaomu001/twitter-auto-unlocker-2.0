@@ -7,7 +7,7 @@
 - 批量处理账号
 - 仅支持 BitBrowser
 
-版本: 2.0 - 仅支持 BitBrowser + YesCaptcha
+版本: 2.0 - 仅支持 BitBrowser + 插件验证码
 """
 
 import asyncio
@@ -19,6 +19,7 @@ from typing import Callable, List, Optional
 
 from ..account.parser import AccountInfo
 from ..captcha.factory import create_solver, CaptchaConfig, is_plugin_mode
+from ..captcha.plugin_config import apply_captcha_plugin_config
 from ..core.browser_factory import create_browser_provider
 from ..core.config import AppConfig
 from ..core.errors import XUnlockerError, is_retryable, get_error_category, ErrorCategory
@@ -167,6 +168,7 @@ class UnlockWorker:
                 browser_name=f"unlock_{account.username}",
                 page_timeout=self.config.browser.timeout_ms,
             ) as browser:
+                await apply_captcha_plugin_config(browser, self.config)
                 session_manager = SessionManager(self.config.output.dir)
 
                 unlock_result = await unlock_account(
@@ -242,11 +244,16 @@ class UnlockWorker:
         start_time = datetime.now()
 
         captcha_mode = self.config.captcha.mode
+        if self.config.captcha.is_plugin_mode():
+            providers = "+".join(self.config.captcha.plugin_provider_order())
+            captcha_label = f"插件({providers})"
+        else:
+            captcha_label = "YesCaptcha(API)"
         logger.info(
             f"开始批量处理: {len(self.accounts)} 个账号, "
             f"并发数: {self.config.concurrency.max_browsers}, "
             f"浏览器: BitBrowser, "
-            f"验证码: YesCaptcha ({captcha_mode} 模式)"
+            f"验证码: {captcha_label} ({captcha_mode} 模式)"
         )
 
         try:
@@ -267,7 +274,7 @@ class UnlockWorker:
             else:
                 # 插件模式：不需要求解器（插件自动处理）
                 self._solver = None
-                logger.info("使用 YesCaptcha 插件模式，请确保浏览器已安装人机助手")
+                logger.info("使用插件模式，请确保浏览器已安装对应人机助手")
 
             # 创建所有任务
             tasks = [

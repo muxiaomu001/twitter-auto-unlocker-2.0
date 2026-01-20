@@ -79,7 +79,8 @@ class TwitterAuth:
         password: str,
         totp_secret: Optional[str] = None,
         email: Optional[str] = None,
-        solver: Optional["CaptchaSolver"] = None
+        solver: Optional["CaptchaSolver"] = None,
+        token: Optional[str] = None
     ):
         """
         初始化认证处理器
@@ -91,6 +92,7 @@ class TwitterAuth:
             totp_secret: TOTP 密钥（可选）
             email: 关联邮箱（用于异常活动验证，可选）
             solver: 验证码求解器（用于处理 Cloudflare Turnstile，可选）
+            token: X auth_token（优先使用，可选）
         """
         self.browser = browser
         self.username = username
@@ -98,12 +100,67 @@ class TwitterAuth:
         self.totp_secret = totp_secret
         self.email = email
         self.solver = solver
+        self.token = token
         self._logger = get_logger(__name__, account_id=username)
 
         # 组合辅助模块
         self._cloudflare = CloudflareHandler(browser, solver, username)
         self._unusual_activity = UnusualActivityHandler(browser, username, email, username)
         self._flow_helper = LoginFlowHelper(browser, username)
+
+    async def login_with_token(self) -> LoginResult:
+        """
+        使用 auth_token Cookie 直接登录
+
+        Returns:
+            登录结果
+        """
+        if not self.token:
+            self._logger.warning("未提供 auth_token，无法使用 Token 登录")
+            return LoginResult.FAILED
+
+        self._logger.info("尝试使用 Token 登录...")
+
+        page = self.browser.page
+
+        try:
+            # 1. 导航到 X 首页
+            self._logger.debug("导航到 X 首页...")
+            await page.goto("https://x.com", wait_until="domcontentloaded", timeout=30000)
+            await human_delay(1, 2)
+
+            # 2. 设置 auth_token Cookie
+            self._logger.debug("设置 auth_token Cookie...")
+            await page.context.add_cookies([{
+                "name": "auth_token",
+                "value": self.token,
+                "domain": ".x.com",
+                "path": "/",
+                "httpOnly": True,
+                "secure": True,
+                "sameSite": "None"
+            }])
+
+            # 3. 刷新页面验证登录
+            self._logger.debug("刷新页面验证登录状态...")
+            await page.reload(wait_until="networkidle", timeout=30000)
+            await human_delay(2, 3)
+
+            # 4. 检查登录状态
+            result = await self._check_page_state()
+
+            if result == LoginResult.SUCCESS:
+                self._logger.info("Token 登录成功")
+            elif result == LoginResult.NEED_UNLOCK:
+                self._logger.info("Token 登录成功，但账号需要解锁")
+            else:
+                self._logger.warning(f"Token 登录结果: {result.value}")
+
+            return result
+
+        except Exception as e:
+            self._logger.error(f"Token 登录失败: {e}")
+            return LoginResult.FAILED
 
     def _generate_2fa_code(self) -> Optional[str]:
         """生成 TOTP 验证码"""
@@ -167,10 +224,49 @@ class TwitterAuth:
         """
         执行登录流程
 
+        登录策略:
+        1. 优先使用 Token 登录
+        2. Token 失败或不存在时，使用账号密码登录
+        3. 均失败则报告失败
+
         Returns:
             登录结果
         """
         self._logger.info("开始登录流程")
+
+        # 策略1: 优先使用 Token 登录
+        if self.token:
+            self._logger.info("检测到 Token，优先尝试 Token 登录...")
+            token_result = await self.login_with_token()
+
+            # Token 登录成功或需要解锁
+            if token_result in (LoginResult.SUCCESS, LoginResult.NEED_UNLOCK):
+                return token_result
+
+            # Token 登录失败，检查是否可以降级
+            self._logger.warning(f"Token 登录失败: {token_result.value}")
+
+            if self.password:
+                self._logger.info("尝试降级为账号密码登录...")
+            else:
+                self._logger.error("无密码可用，无法降级登录")
+                return token_result
+
+        # 策略2: 账号密码登录
+        if not self.password:
+            self._logger.error("未提供密码，无法执行账号密码登录")
+            return LoginResult.FAILED
+
+        return await self._login_with_password()
+
+    async def _login_with_password(self) -> LoginResult:
+        """
+        使用账号密码执行登录流程
+
+        Returns:
+            登录结果
+        """
+        self._logger.info("开始账号密码登录流程")
 
         # 浏览器预热 - 建立信任
         await self._flow_helper.warm_up_browser(self._cloudflare)
@@ -405,10 +501,13 @@ async def perform_login(
     password: str,
     totp_secret: Optional[str] = None,
     email: Optional[str] = None,
-    solver: Optional["CaptchaSolver"] = None
+    solver: Optional["CaptchaSolver"] = None,
+    token: Optional[str] = None
 ) -> LoginResult:
     """
     执行登录（便捷函数）
+
+    登录策略: Token 优先 → 账号密码登录 → 失败
 
     Args:
         browser: 浏览器管理器
@@ -417,9 +516,10 @@ async def perform_login(
         totp_secret: TOTP 密钥（可选）
         email: 关联邮箱（用于异常活动验证，可选）
         solver: 验证码求解器（用于处理 Cloudflare Turnstile，可选）
+        token: X auth_token（优先使用，可选）
 
     Returns:
         登录结果
     """
-    auth = TwitterAuth(browser, username, password, totp_secret, email, solver)
+    auth = TwitterAuth(browser, username, password, totp_secret, email, solver, token)
     return await auth.login()

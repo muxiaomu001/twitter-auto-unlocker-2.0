@@ -13,7 +13,7 @@ from ..utils.logger import get_logger
 
 if TYPE_CHECKING:
     from ..core.browser import BrowserManager
-    from .solver import CaptchaSolver
+    from .yescaptcha_solver import YesCaptchaSolver
 
 
 class BaseCaptchaHandler(ABC):
@@ -22,7 +22,7 @@ class BaseCaptchaHandler(ABC):
     def __init__(
         self,
         browser: "BrowserManager",
-        solver: "CaptchaSolver",
+        solver: "YesCaptchaSolver",
         account_id: Optional[str] = None
     ):
         """

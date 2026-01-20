@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Optional, Tuple, TYPE_CHECKING
 
 from ..account.auth import TwitterAuth, LoginResult
+from ..account.cloudflare import CloudflareHandler
 
 if TYPE_CHECKING:
     from ..captcha.arkose import ArkoseHandler
@@ -83,6 +84,9 @@ class UnlockFlow:
         # 验证码相关选择器
         "captcha_iframe": 'iframe[src*="arkoselabs"], iframe[src*="funcaptcha"], iframe[id*="arkose"]',
         "turnstile_iframe": 'iframe[src*="turnstile"], iframe[src*="cloudflare"]',
+        # 锁定页面检测
+        "locked_title": 'h1:has-text("Your account has been locked"), h1:has-text("账号已被锁定")',
+        "challenge_text": ':text("Pass a challenge"), :text("通过验证")',
     }
 
     def __init__(
@@ -152,6 +156,65 @@ class UnlockFlow:
         self._logger.debug(f"状态切换: {self._state.value} -> {new_state.value}")
         self._state = new_state
 
+    async def _dispatch_click_events(self, selector: str) -> bool:
+        """兜底：通过事件链派发点击"""
+        page = self.browser.page
+        try:
+            return await page.evaluate(
+                """
+                (selector) => {
+                    const btn = document.querySelector(selector);
+                    if (!btn) return false;
+                    const rect = btn.getBoundingClientRect();
+                    const x = rect.left + rect.width * 0.5;
+                    const y = rect.top + rect.height * 0.6;
+
+                    const eventTypes = [
+                        "pointerover", "pointerenter",
+                        "mouseover", "mouseenter",
+                        "pointermove", "mousemove",
+                        "pointerdown", "mousedown",
+                        "focus",
+                        "pointerup", "mouseup",
+                        "click"
+                    ];
+
+                    const eventOptions = {
+                        bubbles: true,
+                        cancelable: true,
+                        composed: true,
+                        view: window,
+                        clientX: x,
+                        clientY: y,
+                        screenX: x,
+                        screenY: y,
+                        button: 0,
+                        buttons: 1,
+                        pointerType: "mouse",
+                        isPrimary: true,
+                        pointerId: 1
+                    };
+
+                    eventTypes.forEach((type) => {
+                        let event;
+                        if (type.startsWith("pointer")) {
+                            event = new PointerEvent(type, eventOptions);
+                        } else if (type === "focus") {
+                            event = new FocusEvent(type, { bubbles: false, cancelable: true });
+                        } else {
+                            event = new MouseEvent(type, eventOptions);
+                        }
+                        btn.dispatchEvent(event);
+                    });
+                    return true;
+                }
+                """,
+                selector,
+            )
+        except Exception as e:
+            self._logger.debug(f"事件派发失败: {e}")
+            return False
+
     async def _screenshot(self, name: str) -> None:
         """保存截图（如果启用）"""
         if self.config.browser.save_screenshots:
@@ -175,7 +238,8 @@ class UnlockFlow:
             password=self.account.password,
             totp_secret=self.account.totp_secret,
             email=self.account.email,
-            solver=self.solver
+            solver=self.solver,
+            token=self.account.token  # 新增: 传递 Token 以支持 Token 优先登录
         )
 
         result = await auth.login()
@@ -217,22 +281,104 @@ class UnlockFlow:
             return False
 
     async def _click_start_unlock(self) -> bool:
-        """点击开始解锁按钮"""
+        """
+        点击开始解锁按钮
+
+        该方法会多次尝试点击 Start 按钮，并等待页面变化。
+        某些情况下可能需要多次点击才能进入验证码页面。
+        """
         page = self.browser.page
+        max_click_attempts = 3
+        selector = self.SELECTORS["unlock_button"]
 
-        try:
-            button = await page.wait_for_selector(
-                self.SELECTORS["unlock_button"],
-                timeout=10000,
-                state="visible"
-            )
-            if button:
-                await button.click()
-                await asyncio.sleep(2)
-                return True
-        except Exception as e:
-            self._logger.debug(f"未找到开始按钮: {e}")
+        # 先处理 Cloudflare 验证，再尝试点击 Start
+        cloudflare = CloudflareHandler(
+            browser=self.browser,
+            solver=self.solver,
+            account_id=self.account.username
+        )
+        if await cloudflare.check_cloudflare_block():
+            self._logger.info("检测到 Cloudflare 验证，尝试处理...")
+            if not await cloudflare.handle_cloudflare_block():
+                self._logger.error("Cloudflare 验证未通过，停止点击 Start")
+                return False
 
+        for click_attempt in range(max_click_attempts):
+            try:
+                self._logger.info(f"尝试点击 Start 按钮 ({click_attempt + 1}/{max_click_attempts})")
+
+                locator = page.locator(selector).first
+                await locator.wait_for(state="visible", timeout=10000)
+                await locator.scroll_into_view_if_needed()
+                await asyncio.sleep(0.2)
+
+                # 记录点击前的 URL
+                url_before = page.url
+
+                clicked = False
+                try:
+                    await locator.click(timeout=5000)
+                    clicked = True
+                except Exception as e:
+                    self._logger.debug(f"Start 标准点击失败: {e}")
+                    try:
+                        await locator.click(timeout=5000, force=True)
+                        clicked = True
+                    except Exception as e2:
+                        self._logger.debug(f"Start 强制点击失败: {e2}")
+                        if await self._dispatch_click_events(selector):
+                            clicked = True
+
+                if clicked:
+                    self._logger.debug("Start 点击已触发")
+
+                    # 等待页面响应
+                    await asyncio.sleep(3)
+
+                    # 等待网络空闲
+                    try:
+                        await page.wait_for_load_state("networkidle", timeout=10000)
+                    except Exception:
+                        pass
+
+                    # 检查页面是否发生变化
+                    url_after = page.url
+                    self._logger.info(f"点击后 URL: {url_after}")
+
+                    # 检查是否有验证码出现
+                    captcha_iframe = await page.query_selector(self.SELECTORS["captcha_iframe"])
+                    turnstile_iframe = await page.query_selector(self.SELECTORS["turnstile_iframe"])
+
+                    if captcha_iframe or turnstile_iframe:
+                        self._logger.info("检测到验证码 iframe，Start 点击成功")
+                        return True
+
+                    # 检查 URL 是否变化（可能已跳转到其他页面）
+                    if url_after != url_before:
+                        self._logger.info(f"页面 URL 已变化: {url_before} -> {url_after}")
+                        return True
+
+                    # 检查 Start 按钮是否还存在
+                    start_button_still_exists = await page.query_selector(self.SELECTORS["unlock_button"])
+                    if not start_button_still_exists:
+                        self._logger.info("Start 按钮已消失，页面可能已更新")
+                        return True
+
+                    # 如果按钮还在，页面没变化，尝试再次点击
+                    self._logger.warning("页面未发生变化，准备重试点击...")
+                    await self._screenshot(f"start_click_retry_{click_attempt}")
+                    await asyncio.sleep(2)
+                else:
+                    self._logger.warning("Start 点击失败，准备重试...")
+                    await asyncio.sleep(2)
+
+            except Exception as e:
+                self._logger.debug(f"点击 Start 按钮出错: {e}")
+                if click_attempt < max_click_attempts - 1:
+                    await asyncio.sleep(2)
+                    continue
+
+        self._logger.warning("多次点击 Start 按钮后页面仍未变化")
         return False
 
     async def _wait_for_plugin(self) -> Tuple[bool, Optional[str]]:
@@ -479,6 +625,152 @@ class UnlockFlow:
         except Exception as e:
             self._logger.error(f"保存会话失败: {e}")
             return False
+
+    async def detect_current_state(self) -> str:
+        """
+        检测当前页面状态
+
+        Returns:
+            状态字符串: SUCCESS, NEED_START, CAPTCHA_PRESENT, NEED_CONTINUE,
+                       SUSPENDED, LOCKED, ON_ACCESS_PAGE, UNKNOWN
+        """
+        page = self.browser.page
+        current_url = page.url
+
+        self._logger.debug(f"检测页面状态，当前 URL: {current_url}")
+
+        # 1. 检查是否在首页（已解锁）
+        if "/home" in current_url:
+            home_el = await page.query_selector(self.SELECTORS["success_indicator"])
+            if home_el:
+                return "SUCCESS"
+
+        # 2. 检查是否在解锁页面
+        if "/account/access" in current_url:
+            # 检查是否有 Start 按钮
+            start_btn = await page.query_selector(self.SELECTORS["unlock_button"])
+            if start_btn:
+                return "NEED_START"
+
+            # 检查是否有验证码
+            captcha = await page.query_selector(self.SELECTORS["captcha_iframe"])
+            turnstile = await page.query_selector(self.SELECTORS["turnstile_iframe"])
+            if captcha or turnstile:
+                return "CAPTCHA_PRESENT"
+
+            # 检查是否有 Continue 按钮
+            continue_btn = await page.query_selector(self.SELECTORS["continue_button"])
+            if continue_btn:
+                return "NEED_CONTINUE"
+
+            return "ON_ACCESS_PAGE"
+
+        # 3. 检查账号状态
+        if "suspended" in current_url:
+            return "SUSPENDED"
+        if "locked" in current_url:
+            return "LOCKED"
+
+        return "UNKNOWN"
+
+    async def continue_from_current_state(self) -> UnlockResult:
+        """
+        从当前页面状态继续解锁流程
+
+        该方法用于调试场景，无需从登录开始，直接从当前页面状态继续。
+
+        Returns:
+            解锁结果
+        """
+        self._logger.info("从当前状态继续解锁流程")
+
+        # 1. 检测当前状态
+        state = await self.detect_current_state()
+        self._logger.info(f"检测到当前状态: {state}")
+
+        # 2. 根据状态执行操作
+        if state == "SUCCESS":
+            self._logger.info("账号已解锁，无需操作")
+            self._set_state(UnlockState.SUCCESS)
+            return UnlockResult(
+                success=True,
+                account_id=self.account.username,
+                message="账号已解锁",
+                state=self._state,
+                attempts=0
+            )
+
+        if state == "SUSPENDED":
+            self._logger.error("账号已被封禁")
+            self._set_state(UnlockState.FAILED)
+            return UnlockResult(
+                success=False,
+                account_id=self.account.username,
+                message="账号已被封禁",
+                state=self._state,
+                attempts=0
+            )
+
+        if state == "NEED_START":
+            self._logger.info("需要点击 Start 按钮")
+            await self._click_start_unlock()
+
+            # 等待并重新检测
+            await asyncio.sleep(2)
+            state = await self.detect_current_state()
+
+        if state in ["CAPTCHA_PRESENT", "ON_ACCESS_PAGE"]:
+            self._logger.info("等待验证码处理...")
+            captcha_success, captcha_error = await self._detect_and_solve_captcha()
+            if not captcha_success:
+                self._logger.warning(f"验证码处理失败: {captcha_error}")
+                self._set_state(UnlockState.FAILED)
+                return UnlockResult(
+                    success=False,
+                    account_id=self.account.username,
+                    message=f"验证码处理失败: {captcha_error}",
+                    state=self._state,
+                    attempts=1
+                )
+
+            # 等待并重新检测
+            await asyncio.sleep(2)
+            state = await self.detect_current_state()
+
+        if state == "NEED_CONTINUE":
+            self._logger.info("需要点击 Continue 按钮")
+            page = self.browser.page
+            try:
+                continue_btn = await page.query_selector(self.SELECTORS["continue_button"])
+                if continue_btn:
+                    await continue_btn.click()
+                    await asyncio.sleep(3)
+            except Exception as e:
+                self._logger.warning(f"点击 Continue 按钮失败: {e}")
+
+        # 3. 验证结果
+        verify_success, verify_error = await self._verify_unlock()
+        if verify_success:
+            self._logger.info("解锁成功")
+            self._set_state(UnlockState.SUCCESS)
+            await self._save_session()
+            return UnlockResult(
+                success=True,
+                account_id=self.account.username,
+                message="解锁成功",
+                state=self._state,
+                attempts=1
+            )
+        else:
+            self._logger.warning(f"验证失败: {verify_error}")
+            self._set_state(UnlockState.FAILED)
+            return UnlockResult(
+                success=False,
+                account_id=self.account.username,
+                message=f"验证失败: {verify_error}",
+                state=self._state,
+                attempts=1
+            )
 
     async def run(self) -> UnlockResult:
         """

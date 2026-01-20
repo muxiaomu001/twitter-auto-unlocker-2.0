@@ -130,8 +130,7 @@ class CloudflareHandler:
             是否成功（无 Turnstile 或已解决）
         """
         if not self.solver:
-            self._logger.debug("未提供验证码求解器，跳过 Turnstile 检测")
-            return True
+            self._logger.debug("未提供验证码求解器，使用插件等待模式处理 Turnstile")
 
         # 延迟导入避免循环依赖
         from ..captcha.turnstile import TurnstileHandler
@@ -142,9 +141,10 @@ class CloudflareHandler:
             account_id=self._logger.name
         )
 
-        # 尝试多次检测（最多 3 次，每次间隔 2 秒）
-        for attempt in range(3):
-            self._logger.debug(f"Turnstile 检测尝试 {attempt + 1}/3")
+        # 尝试多次检测（插件模式更长等待）
+        max_attempts = 15 if not self.solver else 3
+        for attempt in range(max_attempts):
+            self._logger.debug(f"Turnstile 检测尝试 {attempt + 1}/{max_attempts}")
 
             if await handler.detect():
                 self._logger.info("检测到 Cloudflare Turnstile，开始求解...")
@@ -172,9 +172,9 @@ class CloudflareHandler:
 
             await asyncio.sleep(2)
 
-        # 未检测到 Turnstile，正常继续
-        self._logger.debug("未检测到 Turnstile")
-        return True
+        # 未检测到 Turnstile，进入后续等待逻辑
+        self._logger.warning("未检测到 Turnstile，继续等待 Cloudflare")
+        return False
 
     async def handle_cloudflare_block(self) -> bool:
         """

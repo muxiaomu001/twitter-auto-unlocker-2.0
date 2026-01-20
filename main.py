@@ -5,7 +5,7 @@ Twitter 自动解锁工具 2.0 - CLI 入口
 功能:
 - 批量解锁被锁定的 Twitter 账号
 - 使用 BitBrowser 指纹浏览器
-- 使用 YesCaptcha 处理验证码（插件/API 两种模式）
+- 使用 2captcha/YesCaptcha 插件或 YesCaptcha API 处理验证码
 
 Usage:
     python main.py --input accounts.txt
@@ -128,11 +128,43 @@ async def main() -> int:
         import logging
         logging.getLogger().setLevel(logging.DEBUG)
 
-    # 检查 API Key
-    if not config.captcha.api_key:
-        logger.error("未提供 YesCaptcha API Key")
-        logger.error("请使用 --api-key 参数或在配置文件中设置 captcha.api_key")
-        return 1
+    # 检查 API Key / 插件 Key
+    if config.captcha.is_plugin_mode():
+        providers = config.captcha.plugin_provider_order()
+        missing_details = []
+        ready_providers = []
+
+        if "2captcha" in providers:
+            if not config.captcha.get_twocaptcha_key():
+                missing_details.append("captcha.plugin.twocaptcha.api_key")
+            if not config.captcha.plugin_twocaptcha_ext_id:
+                missing_details.append("captcha.plugin.twocaptcha.ext_id")
+            if config.captcha.get_twocaptcha_key() and config.captcha.plugin_twocaptcha_ext_id:
+                ready_providers.append("2captcha")
+
+        if "yescaptcha" in providers:
+            if not config.captcha.get_yescaptcha_key():
+                missing_details.append("captcha.plugin.yescaptcha.api_key 或 captcha.api_key")
+            if not config.captcha.plugin_yescaptcha_ext_id:
+                missing_details.append("captcha.plugin.yescaptcha.ext_id")
+            if config.captcha.get_yescaptcha_key() and config.captcha.plugin_yescaptcha_ext_id:
+                ready_providers.append("yescaptcha")
+
+        if providers in (["2captcha"], ["yescaptcha"]):
+            if missing_details:
+                logger.error("插件配置缺失: " + ", ".join(missing_details))
+                return 1
+        else:
+            if not ready_providers:
+                logger.error("插件配置缺失: " + ", ".join(missing_details))
+                return 1
+            if missing_details:
+                logger.warning("部分插件配置缺失，将跳过对应插件: " + ", ".join(missing_details))
+    else:
+        if not config.captcha.api_key:
+            logger.error("未提供 YesCaptcha API Key")
+            logger.error("请使用 --api-key 参数或在配置文件中设置 captcha.api_key")
+            return 1
 
     # 创建输出目录
     config.output.dir.mkdir(parents=True, exist_ok=True)
@@ -162,7 +194,12 @@ async def main() -> int:
     logger.info("=" * 50)
     logger.info("配置信息:")
     logger.info(f"  浏览器: BitBrowser (API: {config.browser.api_url})")
-    logger.info(f"  验证码: YesCaptcha ({config.captcha.mode} 模式)")
+    if config.captcha.is_plugin_mode():
+        providers = "+".join(config.captcha.plugin_provider_order())
+        captcha_label = f"插件({providers})"
+    else:
+        captcha_label = "YesCaptcha(API)"
+    logger.info(f"  验证码: {captcha_label} ({config.captcha.mode} 模式)")
     logger.info(f"  并发数: {config.concurrency.max_browsers}")
     logger.info(f"  最大重试: {config.retry.max_attempts}")
     logger.info(f"  输出目录: {config.output.dir}")

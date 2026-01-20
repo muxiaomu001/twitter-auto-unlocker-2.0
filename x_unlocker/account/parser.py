@@ -2,19 +2,20 @@
 账号解析模块 - 解析账号文件
 
 支持格式（冒号分隔）:
+  格式0: token (仅1字段，纯 Token 登录，优先使用)
   格式1: 账号:密码:邮箱:2FA (4字段，邮箱包含@)
   格式2: 账号:密码:2FA (3字段)
-  格式3: 账号:密码:2FA:token:邮箱:邮箱密码:邮箱ClientId:邮箱Token (8字段完整格式)
+  格式3: 账号:密码:2FA:token:邮箱:邮箱密码:邮箱ClientId:邮箱RefreshToken (8字段完整格式)
 
 字段说明:
   - 账号: Twitter/X 用户名
-  - 密码: 账号密码
+  - 密码: 账号密码（Token 登录时可空）
   - 2FA: TOTP 密钥
-  - token: X token（可选）
+  - token: X auth_token（优先使用）
   - 邮箱: 关联邮箱（用于异常活动验证）
   - 邮箱密码: 邮箱密码
-  - 邮箱ClientId: 邮箱 Client ID
-  - 邮箱Token: 邮箱 Token
+  - 邮箱ClientId: 邮箱 OAuth Client ID
+  - 邮箱RefreshToken: 邮箱 OAuth Refresh Token
 """
 
 from dataclasses import dataclass, field
@@ -31,12 +32,22 @@ class AccountInfo:
     username: str
     password: str
     totp_secret: Optional[str] = None
-    token: Optional[str] = None  # X token
+    token: Optional[str] = None  # X auth_token（优先使用）
     email: Optional[str] = None  # 邮箱（用于异常活动验证）
     email_password: Optional[str] = None  # 邮箱密码
     email_client_id: Optional[str] = None  # 邮箱 Client ID
-    email_token: Optional[str] = None  # 邮箱 Token
+    email_refresh_token: Optional[str] = None  # 邮箱 OAuth Refresh Token
     proxy: Optional[ProxyConfig] = None  # 代理现在是可选的
+
+    @property
+    def has_token(self) -> bool:
+        """是否有有效的 auth_token"""
+        return bool(self.token and self.token.strip())
+
+    @property
+    def has_password(self) -> bool:
+        """是否有有效的密码"""
+        return bool(self.password and self.password.strip())
 
     @property
     def id(self) -> str:
@@ -59,9 +70,10 @@ def parse_account_line(line: str, line_number: int = 0) -> AccountInfo:
     解析单行账号信息
 
     支持多种格式:
+      格式0: token (仅1字段，纯 Token 登录)
       格式1: 账号:密码:邮箱:2FA (4字段，第3字段包含@表示是邮箱)
       格式2: 账号:密码:2FA (3字段)
-      格式3: 账号:密码:2FA:token:邮箱:邮箱密码:邮箱ClientId:邮箱Token (8字段)
+      格式3: 账号:密码:2FA:token:邮箱:邮箱密码:邮箱ClientId:邮箱RefreshToken (8字段)
 
     Args:
         line: 账号行
@@ -85,21 +97,37 @@ def parse_account_line(line: str, line_number: int = 0) -> AccountInfo:
     # 使用冒号分隔
     parts = line.split(":")
 
-    # 最少需要 3 个部分
-    if len(parts) < 3:
-        raise AccountParseError(
-            f"格式错误，期望至少 3 个字段，实际 {len(parts)} 个",
-            line_number,
-            line
+    # 格式0: 仅 Token（单字段，无冒号分隔）
+    if len(parts) == 1:
+        token = parts[0].strip()
+        if not token:
+            raise AccountParseError("Token 不能为空", line_number, line)
+        # 返回仅包含 Token 的账号信息
+        return AccountInfo(
+            username=f"token_user_{line_number}",  # 占位用户名
+            password="",  # 无密码
+            token=token,
+            proxy=None
         )
 
+    # 格式: 账号:密码 (2字段)
+    if len(parts) == 2:
+        username = parts[0].strip()
+        password = parts[1].strip()
+        if not username:
+            raise AccountParseError("用户名不能为空", line_number, line)
+        return AccountInfo(
+            username=username,
+            password=password,
+            proxy=None
+        )
+
+    # 3+ 字段格式
     username = parts[0].strip()
     password = parts[1].strip()
 
     if not username:
         raise AccountParseError("用户名不能为空", line_number, line)
-    if not password:
-        raise AccountParseError("密码不能为空", line_number, line)
 
     # 初始化可选字段
     totp_secret = None
@@ -107,7 +135,7 @@ def parse_account_line(line: str, line_number: int = 0) -> AccountInfo:
     email = None
     email_password = None
     email_client_id = None
-    email_token = None
+    email_refresh_token = None
 
     if len(parts) == 3:
         # 格式2: 账号:密码:2FA
@@ -126,13 +154,13 @@ def parse_account_line(line: str, line_number: int = 0) -> AccountInfo:
             totp_secret = field3 or None
             token = field4 or None
     else:
-        # 格式3: 账号:密码:2FA:token:邮箱:邮箱密码:邮箱ClientId:邮箱Token
+        # 格式3: 账号:密码:2FA:token:邮箱:邮箱密码:邮箱ClientId:邮箱RefreshToken
         totp_secret = parts[2].strip() or None
         token = parts[3].strip() if len(parts) > 3 and parts[3].strip() else None
         email = parts[4].strip() if len(parts) > 4 and parts[4].strip() else None
         email_password = parts[5].strip() if len(parts) > 5 and parts[5].strip() else None
         email_client_id = parts[6].strip() if len(parts) > 6 and parts[6].strip() else None
-        email_token = parts[7].strip() if len(parts) > 7 and parts[7].strip() else None
+        email_refresh_token = parts[7].strip() if len(parts) > 7 and parts[7].strip() else None
 
     return AccountInfo(
         username=username,
@@ -142,7 +170,7 @@ def parse_account_line(line: str, line_number: int = 0) -> AccountInfo:
         email=email,
         email_password=email_password,
         email_client_id=email_client_id,
-        email_token=email_token,
+        email_refresh_token=email_refresh_token,
         proxy=None
     )
 

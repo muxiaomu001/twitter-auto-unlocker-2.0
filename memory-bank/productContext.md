@@ -24,7 +24,9 @@
 | Cloudflare Turnstile 验证 | ✅ | YesCaptcha 人机助手自动处理 |
 | Arkose FunCaptcha 验证 | ✅ | YesCaptcha 人机助手自动处理 |
 | 自动登录 + TOTP 2FA | ✅ | 支持 TOTP 验证码自动生成 |
+| **Token 优先登录** | ✅ | auth_token Cookie 直接登录，失败后降级 |
 | 解锁后导出 cookies | ✅ | JSON 格式保存 |
+| **多格式账号解析** | ✅ | 支持 1/2/3/4/8 字段格式 |
 
 ---
 
@@ -49,15 +51,38 @@
 
 ## 数据边界
 
-| 类型 | 来源/存储 |
-|------|-----------|
-| 账号数据 | 本地文件（`accounts.txt`） |
-| 会话数据 | 本地文件（`cookies.json`） |
-| 配置数据 | 本地文件（`config.yaml`） |
+| 类型 | 来源/存储 | 格式 |
+|------|-----------|------|
+| 账号数据 | 本地文件（`accounts.txt`） | 多种格式（1-8 字段） |
+| 会话数据 | 本地文件（`cookies.json`） | JSON |
+| 配置数据 | 本地文件（`config.yaml`） | YAML |
+
+---
+
+## 账号输入格式
+
+### 支持的格式
+
+```
+# 格式0: 仅 Token (1字段)
+7d449909ff9e88cc6ffa96959b920d702fc7af52
+
+# 格式1: 账号:密码 (2字段)
+username:password123
+
+# 格式2: 账号:密码:2FA (3字段)
+username:password123:TOTP_SECRET
+
+# 格式3: 账号:密码:邮箱:2FA (4字段，@判断邮箱位置)
+username:password123:user@email.com:TOTP_SECRET
+
+# 格式4: 完整格式 (8字段)
+账号:密码:2FA:token:邮箱:邮箱密码:邮箱ClientId:邮箱RefreshToken
+```
 
 ---
 
 ## 最后更新
 
 - **时间**: 2026-01-19
-- **操作**: 创建初始 productContext.md
+- **操作**: 新增 Token 登录功能、多格式账号解析

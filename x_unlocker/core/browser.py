@@ -1,8 +1,8 @@
 """
-Browser Module - Camoufox browser initialization and management
+Browser Module - BitBrowser browser initialization and management (2.0)
 
 Features:
-- Launch Firefox browser using Camoufox
+- Launch browser using BitBrowser API
 - Automatic fingerprint rotation (each instance has unique fingerprint)
 - SOCKS5 proxy configuration with authentication support
 
@@ -14,7 +14,8 @@ Note:
 from contextlib import asynccontextmanager
 from typing import Optional, Tuple
 
-from .camoufox_provider import CamoufoxProvider
+from .bitbrowser_provider import BitBrowserProvider
+from .bitbrowser_client import BitBrowserConfig
 from .errors import BrowserNotStartedError
 from ..proxy.parser import ProxyConfig
 from ..utils.logger import get_logger
@@ -23,7 +24,7 @@ logger = get_logger(__name__)
 
 
 # Backward compatibility alias
-BrowserManager = CamoufoxProvider
+BrowserManager = BitBrowserProvider
 
 
 @asynccontextmanager
@@ -40,19 +41,18 @@ async def create_browser(
 
     Args:
         proxy: Proxy configuration (optional, None for direct connection)
-        headless: Whether to run in headless mode
+        headless: Whether to run in headless mode (ignored for BitBrowser)
         page_timeout: Page timeout in milliseconds
 
     Yields:
-        BrowserManager (CamoufoxProvider) instance
+        BrowserManager (BitBrowserProvider) instance
 
     Example:
         async with create_browser() as browser:
             await browser.navigate("https://x.com")
     """
-    manager = CamoufoxProvider(
+    manager = BitBrowserProvider(
         proxy=proxy,
-        headless=headless,
         page_timeout=page_timeout
     )
     try:
@@ -74,15 +74,14 @@ async def create_browser_simple(
 
     Args:
         proxy: Proxy configuration (optional, None for direct connection)
-        headless: Whether to run in headless mode
+        headless: Whether to run in headless mode (ignored for BitBrowser)
         page_timeout: Page timeout in milliseconds
 
     Returns:
         (BrowserManager, page) tuple
     """
-    manager = CamoufoxProvider(
+    manager = BitBrowserProvider(
         proxy=proxy,
-        headless=headless,
         page_timeout=page_timeout
     )
     await manager.start()
